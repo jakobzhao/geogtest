@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <title>虚拟环境变形示例：山水楼宇街道 + 折叠/扭曲/Möbius + 控制姿态与远近</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        /* Three.js 渲染区域 */
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+
+        /* 变形按钮区域 */
+        .button-container {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 20;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        .button-container button {
+            margin: 3px;
+            padding: 5px 8px;
+            font-size: 13px;
+        }
+
+        /* 控制面板：环境与相机控制 */
+        #controlPanel {
+            position: absolute;
+            top: 80px;
+            left: 10px;
+            z-index: 20;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            max-width: 220px;
+            font-size: 13px;
+        }
+
+        #controlPanel div {
+            margin: 4px 0;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- 变形按钮 -->
+    <div class="button-container">
+        <button id="foldButton">折叠</button>
+        <button id="twistButton">扭曲</button>
+        <button id="mobiusButton">Möbius</button>
+        <button id="resetButton">重置</button>
+    </div>
+    <!-- 控制面板：调节环境位置、旋转（姿态）以及相机远近 -->
+    <div id="controlPanel">
+        <div>
+            <label>Env Pos X: <span id="envPosXVal">0</span></label>
+            <input type="range" id="envPosX" min="-20" max="20" step="0.1" value="0">
+        </div>
+        <div>
+            <label>Env Pos Y: <span id="envPosYVal">0</span></label>
+            <input type="range" id="envPosY" min="-20" max="20" step="0.1" value="0">
+        </div>
+        <div>
+            <label>Env Pos Z: <span id="envPosZVal">0</span></label>
+            <input type="range" id="envPosZ" min="-10" max="10" step="0.1" value="0">
+        </div>
+        <hr>
+        <div>
+            <label>Env Rot X: <span id="envRotXVal">0</span>°</label>
+            <input type="range" id="envRotX" min="-180" max="180" step="1" value="0">
+        </div>
+        <div>
+            <label>Env Rot Y: <span id="envRotYVal">0</span>°</label>
+            <input type="range" id="envRotY" min="-180" max="180" step="1" value="0">
+        </div>
+        <div>
+            <label>Env Rot Z: <span id="envRotZVal">0</span>°</label>
+            <input type="range" id="envRotZ" min="-180" max="180" step="1" value="0">
+        </div>
+        <hr>
+        <div>
+            <label>Camera Z: <span id="camZVal">80</span></label>
+            <input type="range" id="camZ" min="30" max="150" step="1" value="80">
+        </div>
+    </div>
+
+    <!-- Three.js 渲染区域 -->
+    <div id="canvas-container"></div>
+
+    <!-- 引入 Three.js -->
+    <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+    <!-- 如果需要加载噪声，可引用噪声库（本例采用 Math.sin 简单模拟） -->
+    <script>
+        // 全局变量
+        let scene, camera, renderer;
+        // 环境组，包含地形和建筑
+        let envGroup;
+        // 存储每个 mesh 原始的顶点数据（键：mesh.id，值：数组）
+        const envOriginalPositions = {};
+        // 动画持续时间（毫秒）
+        const animationDuration = 1000;
+
+        initScene();
+        animate();
+
+        function initScene() {
+            // 创建场景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xbfd1e5);
+
+            // 创建相机
+            const aspect = window.innerWidth / window.innerHeight;
+            camera = new THREE.PerspectiveCamera(45, aspect, 0.1, 1000);
+            camera.position.set(0, -100, 80);
+            camera.lookAt(0, 0, 0);
+
+            // 创建渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // 添加光源
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(50, -50, 100);
+            scene.add(directionalLight);
+
+            // 创建环境组
+            envGroup = new THREE.Group();
+            scene.add(envGroup);
+
+            // 1. 创建地形：大平面，尺寸 50x50，细分足够细，并用简单函数生成“山水”
+            const groundGeometry = new THREE.PlaneGeometry(50, 50, 200, 200);
+            // 将平面旋转，使其水平（默认在 xy 平面）
+            groundGeometry.rotateX(-Math.PI / 2);
+            // 对顶点进行简单位移：用 sin 函数模拟起伏（低处模拟水，较高处模拟山）
+            const posAttr = groundGeometry.attributes.position;
+            for (let i = 0; i < posAttr.count; i++) {
+                let vertex = new THREE.Vector3().fromBufferAttribute(posAttr, i);
+                // 以 x 与 z 位置决定高度，范围大致 [-5, 10]
+                const height = 3 * Math.sin((vertex.x / 50) * Math.PI * 4) * Math.cos((vertex.z / 50) * Math.PI * 2);
+                vertex.y = height;
+                posAttr.setXYZ(i, vertex.x, vertex.y, vertex.z);
+            }
+            posAttr.needsUpdate = true;
+            const groundMaterial = new THREE.MeshLambertMaterial({ color: 0x88aa55 });
+            const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
+            envGroup.add(groundMesh);
+            // 保存地形原始顶点数据
+            envOriginalPositions[groundMesh.id] = [];
+            for (let i = 0; i < posAttr.count; i++) {
+                envOriginalPositions[groundMesh.id].push(new THREE.Vector3().fromBufferAttribute(posAttr, i));
+            }
+
+            // 2. 添加几座建筑：随机分布在地形上（注意建筑放置在地形上，简单示例）
+            const buildingMaterial = new THREE.MeshLambertMaterial({ color: 0x999999 });
+            for (let i = 0; i < 5; i++) {
+                // 随机建筑位置（x ∈ [-20,20], z ∈ [-20,20]）
+                const bx = Math.random() * 40 - 20;
+                const bz = Math.random() * 40 - 20;
+                // 建筑占地 4x4，外形为矩形
+                const shape = new THREE.Shape();
+                shape.moveTo(0, 0);
+                shape.lineTo(4, 0);
+                shape.lineTo(4, 4);
+                shape.lineTo(0, 4);
+                shape.lineTo(0, 0);
+                // 随机高度在 10~30
+                const bHeight = 10 + Math.random() * 20;
+                const extrudeSettings = { depth: bHeight, bevelEnabled: false };
+                const buildingGeom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+                // 将建筑平移，使得底部在地面（注意：ExtrudeGeometry默认沿 z 挤出，此处转为 y 方向）
+                buildingGeom.rotateX(-Math.PI / 2);
+                // 调整建筑位置：将建筑中心放置在 (bx,?,bz)
+                buildingGeom.translate(bx, 0, bz);
+                const buildingMesh = new THREE.Mesh(buildingGeom, buildingMaterial);
+                envGroup.add(buildingMesh);
+                // 保存建筑原始顶点数据
+                const posAttrB = buildingGeom.attributes.position;
+                envOriginalPositions[buildingMesh.id] = [];
+                for (let j = 0; j < posAttrB.count; j++) {
+                    envOriginalPositions[buildingMesh.id].push(new THREE.Vector3().fromBufferAttribute(posAttrB, j));
+                }
+            }
+
+            // 控制面板事件：环境组位置与旋转，以及相机远近
+            document.getElementById('envPosX').addEventListener('input', (e) => {
+                envGroup.position.x = parseFloat(e.target.value);
+                document.getElementById('envPosXVal').innerText = e.target.value;
+            });
+            document.getElementById('envPosY').addEventListener('input', (e) => {
+                envGroup.position.y = parseFloat(e.target.value);
+                document.getElementById('envPosYVal').innerText = e.target.value;
+            });
+            document.getElementById('envPosZ').addEventListener('input', (e) => {
+                envGroup.position.z = parseFloat(e.target.value);
+                document.getElementById('envPosZVal').innerText = e.target.value;
+            });
+            document.getElementById('envRotX').addEventListener('input', (e) => {
+                envGroup.rotation.x = THREE.MathUtils.degToRad(e.target.value);
+                document.getElementById('envRotXVal').innerText = e.target.value;
+            });
+            document.getElementById('envRotY').addEventListener('input', (e) => {
+                envGroup.rotation.y = THREE.MathUtils.degToRad(e.target.value);
+                document.getElementById('envRotYVal').innerText = e.target.value;
+            });
+            document.getElementById('envRotZ').addEventListener('input', (e) => {
+                envGroup.rotation.z = THREE.MathUtils.degToRad(e.target.value);
+                document.getElementById('envRotZVal').innerText = e.target.value;
+            });
+            document.getElementById('camZ').addEventListener('input', (e) => {
+                camera.position.z = parseFloat(e.target.value);
+                document.getElementById('camZVal').innerText = e.target.value;
+            });
+
+            // 绑定变形按钮事件
+            document.getElementById('foldButton').addEventListener('click', () => { startTransformation(foldTransformation); });
+            document.getElementById('twistButton').addEventListener('click', () => { startTransformation(twistTransformation); });
+            document.getElementById('mobiusButton').addEventListener('click', () => { startTransformation(mobiusTransformation); });
+            document.getElementById('resetButton').addEventListener('click', () => { startTransformation(resetTransformation); });
+
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // 通用动画函数，对 envGroup 内每个 mesh 进行顶点插值更新
+        function startTransformation(transformationFunc) {
+            const startTime = performance.now();
+            // 对 envGroup 中的每个 mesh
+            envGroup.traverse(mesh => {
+                if (mesh.isMesh && mesh.geometry && mesh.geometry.attributes.position) {
+                    const geometry = mesh.geometry;
+                    const posAttr = geometry.attributes.position;
+                    const vertexCount = posAttr.count;
+                    // 记录当前顶点状态
+                    const startPositions = [];
+                    for (let i = 0; i < vertexCount; i++) {
+                        startPositions.push(new THREE.Vector3().fromBufferAttribute(posAttr, i));
+                    }
+                    // 取出原始顶点数据（之前保存的）
+                    const origPositions = envOriginalPositions[mesh.id];
+                    // 计算目标状态：基于原始数据计算
+                    const targetPositions = [];
+                    for (let i = 0; i < vertexCount; i++) {
+                        targetPositions.push(transformationFunc(origPositions[i].clone()));
+                    }
+                    // 开始对该 mesh 动画更新
+                    animateMeshTransformation(geometry, posAttr, startPositions, targetPositions, startTime);
+                }
+            });
+        }
+
+        // 针对单个 mesh 的顶点动画
+        function animateMeshTransformation(geometry, posAttr, startPositions, targetPositions, startTime) {
+            const vertexCount = posAttr.count;
+            const elapsed = performance.now() - startTime;
+            let t = elapsed / animationDuration;
+            if (t > 1) t = 1;
+            for (let i = 0; i < vertexCount; i++) {
+                const sp = startPositions[i];
+                const tp = targetPositions[i];
+                const current = new THREE.Vector3().lerpVectors(sp, tp, t);
+                posAttr.setXYZ(i, current.x, current.y, current.z);
+            }
+            posAttr.needsUpdate = true;
+            if (t < 1) {
+                requestAnimationFrame(() => {
+                    animateMeshTransformation(geometry, posAttr, startPositions, targetPositions, startTime);
+                });
+            }
+        }
+
+        // --- 变形转换函数 ---  
+        // 注意：假设环境 x 坐标范围大约在 [-25,25]
+        function foldTransformation(v) {
+            // 以 x=0 为折叠线，右侧（v.x>=0）区域沿 x=0 处绕 X 轴旋转 45°
+            const pivot = 0;
+            const alpha = Math.PI / 4; // 45°
+            if (v.x >= pivot) {
+                const dx = v.x - pivot;
+                const newX = pivot + Math.cos(alpha) * dx;
+                const newZ = Math.sin(alpha) * dx; // “抬起”到 z 轴方向
+                return new THREE.Vector3(newX, v.y, newZ);
+            }
+            return v;
+        }
+
+        function twistTransformation(v) {
+            // 绕 Y 轴扭曲，旋转角度与 x 成正比（假设 x 范围 [-25,25]）
+            const twistFactor = Math.PI / 3; // 最大扭曲角度 60°
+            const angle = twistFactor * (v.x / 25);
+            const cosA = Math.cos(angle);
+            const sinA = Math.sin(angle);
+            const newX = v.x * cosA - v.z * sinA;
+            const newZ = v.x * sinA + v.z * cosA;
+            return new THREE.Vector3(newX, v.y, newZ);
+        }
+
+        function mobiusTransformation(v) {
+            // 将 x 从 [-25,25] 映射到 u ∈ [0, 2π]
+            const u = ((v.x + 25) / 50) * Math.PI * 2;
+            // 将 y 从 [-25,25] 映射到 w ∈ [-1,1]（此处假定 y 范围较小，可根据需要调整）
+            const w = v.y / 25;
+            const R = 15; // 环形中心半径
+            const newX = (R + w * Math.cos(u / 2)) * Math.cos(u);
+            const newZ = (R + w * Math.cos(u / 2)) * Math.sin(u);
+            const newY = w * Math.sin(u / 2);
+            return new THREE.Vector3(newX, newY, newZ);
+        }
+
+        function resetTransformation(v) {
+            // 重置即返回原始位置（未变形）
+            return v;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+
+</html>

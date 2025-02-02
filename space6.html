@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>ArcGIS 3D 建筑飞升示例</title>
+    <meta name="viewport" content="initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <!-- 加载 ArcGIS API for JavaScript CSS -->
+    <link rel="stylesheet" href="https://js.arcgis.com/4.27/esri/themes/light/main.css" />
+    <style>
+        html,
+        body,
+        #viewDiv {
+            padding: 0;
+            margin: 0;
+            height: 100%;
+            width: 100%;
+        }
+
+        #controlPanel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 99;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            font-family: sans-serif;
+        }
+
+        #controlPanel button,
+        #controlPanel input {
+            margin: 5px;
+        }
+    </style>
+    <script src="https://js.arcgis.com/4.27/"></script>
+</head>
+
+<body>
+    <div id="viewDiv"></div>
+    <!-- 控制面板 -->
+    <div id="controlPanel">
+        <button id="flyUpBtn">Fly Up</button>
+        <br>
+        <label for="heightSlider">Height Offset (meters):</label>
+        <input type="range" id="heightSlider" min="0" max="100000" step="1" value="0">
+        <span id="heightValue">0</span>
+    </div>
+    <script>
+        require([
+            "esri/Map",
+            "esri/views/SceneView",
+            "esri/layers/GraphicsLayer",
+            "esri/Graphic",
+            "esri/geometry/Polygon"
+        ], function (Map, SceneView, GraphicsLayer, Graphic, Polygon) {
+
+            // 替换为你自己的 ArcGIS API 密钥，如果你有
+            // esriConfig.apiKey = "YOUR_API_KEY"; // 如果使用免费版，可忽略
+
+            // 创建地图和 SceneView，定位到纽约区域
+            const map = new Map({
+                basemap: "streets",
+                ground: "world-elevation"
+            });
+
+            const view = new SceneView({
+                container: "viewDiv",
+                map: map,
+                camera: {
+                    position: {
+                        longitude: -74.0060,
+                        latitude: 40.7128,
+                        z: 1500
+                    },
+                    tilt: 65,
+                    heading: 0
+                }
+            });
+
+            // 创建一个 GraphicsLayer 用于添加示例建筑
+            const buildingLayer = new GraphicsLayer();
+            map.add(buildingLayer);
+
+            // 定义一个函数，创建建筑符号（采用 polygon-3d 的 extrude 风格）
+            function createBuildingSymbol(color, extrudeHeight, verticalOffsetValue) {
+                return {
+                    type: "polygon-3d",
+                    symbolLayers: [{
+                        type: "extrude",
+                        material: { color: color },
+                        size: extrudeHeight
+                    }],
+                    verticalOffset: {
+                        screenLength: verticalOffsetValue,
+                        maxWorldLength: verticalOffsetValue,
+                        minWorldLength: verticalOffsetValue,
+                        unit: "meters"
+                    }
+                };
+            }
+
+            // 创建示例建筑 1：建筑 1 为一个矩形建筑
+            const building1Polygon = new Polygon({
+                rings: [
+                    [
+                        [-74.007, 40.713],
+                        [-74.007, 40.712],
+                        [-74.005, 40.712],
+                        [-74.005, 40.713],
+                        [-74.007, 40.713]
+                    ]
+                ],
+                spatialReference: { wkid: 4326 }
+            });
+
+            const building1Symbol = createBuildingSymbol("#0077ff", 30, 0);
+            const building1 = new Graphic({
+                geometry: building1Polygon,
+                symbol: building1Symbol
+            });
+
+            // 创建示例建筑 2：建筑 2 为另一个矩形建筑
+            const building2Polygon = new Polygon({
+                rings: [
+                    [
+                        [-74.006, 40.714],
+                        [-74.006, 40.713],
+                        [-74.004, 40.713],
+                        [-74.004, 40.714],
+                        [-74.006, 40.714]
+                    ]
+                ],
+                spatialReference: { wkid: 4326 }
+            });
+
+            const building2Symbol = createBuildingSymbol("#ff7700", 50, 0);
+            const building2 = new Graphic({
+                geometry: building2Polygon,
+                symbol: building2Symbol
+            });
+
+            buildingLayer.addMany([building1, building2]);
+
+            // 飞升动画函数：将所有建筑的 verticalOffset 从当前值平滑更新到目标值（单位：meters）
+            function animateFlyUp(targetOffset) {
+                const duration = 1000; // 动画 1 秒
+                const startTime = performance.now();
+                const graphics = buildingLayer.graphics.toArray();
+                // 获取当前每个建筑的 offset，假设所有建筑初始相同
+                const startOffsets = graphics.map(g => {
+                    return g.symbol.verticalOffset.screenLength || 0;
+                });
+
+                function step(time) {
+                    const elapsed = time - startTime;
+                    const t = Math.min(elapsed / duration, 1);
+                    graphics.forEach((g, i) => {
+                        const newOffset = startOffsets[i] + (targetOffset - startOffsets[i]) * t;
+                        // 直接更新符号对象，并调用 setSymbol() 触发更新
+                        g.symbol.verticalOffset = {
+                            screenLength: newOffset,
+                            maxWorldLength: newOffset,
+                            minWorldLength: newOffset,
+                            unit: "meters"
+                        };
+                        g.setSymbol(g.symbol);
+                    });
+                    if (t < 1) {
+                        requestAnimationFrame(step);
+                    }
+                    view.requestRender();
+                }
+                requestAnimationFrame(step);
+            }
+
+            // 绑定按钮和滑块事件
+            const flyUpBtn = document.getElementById("flyUpBtn");
+            const heightSlider = document.getElementById("heightSlider");
+            const heightValue = document.getElementById("heightValue");
+
+            flyUpBtn.addEventListener("click", function () {
+                const target = parseFloat(heightSlider.value);
+                animateFlyUp(target);
+            });
+
+            heightSlider.addEventListener("input", function () {
+                heightValue.textContent = this.value;
+                // 这里实时更新所有建筑的 verticalOffset，无动画
+                buildingLayer.graphics.forEach(g => {
+                    g.symbol.verticalOffset = {
+                        screenLength: parseFloat(this.value),
+                        maxWorldLength: parseFloat(this.value),
+                        minWorldLength: parseFloat(this.value),
+                        unit: "meters"
+                    };
+                    g.setSymbol(g.symbol);
+                });
+                view.requestRender();
+            });
+
+        });
+    </script>
+</body>
+
+</html>

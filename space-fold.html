@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>点击按钮折叠地图示例</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- 引入 MapLibre GL JS 样式 -->
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl/dist/maplibre-gl.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body,
+        #map {
+            height: 100%;
+        }
+
+        /* 按钮样式 */
+        #fold-button {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1;
+            padding: 10px 15px;
+            font-size: 14px;
+            background: rgba(255, 255, 255, 0.8);
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- 折叠按钮 -->
+    <button id="fold-button">Fold Map</button>
+    <div id="map"></div>
+
+    <!-- 引入 MapLibre GL JS -->
+    <script src="https://unpkg.com/maplibre-gl/dist/maplibre-gl.js"></script>
+    <!-- 引入 three.js -->
+    <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+    <script>
+        // 用你自己的 MapTiler 密钥替换下面的示例密钥
+        const MAPTILER_KEY = 'get_your_own_OpIi9ZULNHzrESv6T2vL';
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: `https://api.maptiler.com/maps/basic-v2/style.json?key=${MAPTILER_KEY}`,
+            center: [-74.0066, 40.7135],  // 曼哈顿区域
+            zoom: 15.5,
+            pitch: 45,
+            bearing: -17.6,
+            canvasContextAttributes: { antialias: true }
+        });
+
+        // 全局保存 three.js 图层引用
+        let myThreeLayer;
+
+        // 定义一个 MapLibre 的自定义图层，集成 three.js 渲染
+        const threeLayer = {
+            id: 'threejs-layer',
+            type: 'custom',
+            renderingMode: '3d',
+            onAdd: function (map, gl) {
+                // 创建 three.js 场景和相机
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera();
+                // 添加光源
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+                this.scene.add(ambientLight);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(0, -70, 100).normalize();
+                this.scene.add(directionalLight);
+
+                // 创建一个容器组，用于折叠动画。所有模型都放入该组中。
+                this.foldGroup = new THREE.Group();
+                this.scene.add(this.foldGroup);
+
+                // 示例：添加一个立方体作为建筑模型
+                const geometry = new THREE.BoxGeometry(10, 10, 30);
+                const material = new THREE.MeshStandardMaterial({ color: 0x0077ff });
+                this.cube = new THREE.Mesh(geometry, material);
+                // 调整立方体位置，使底部在 z=0（即建筑立在地面上）
+                this.cube.position.z = 15;
+                this.foldGroup.add(this.cube);
+
+                // 创建 three.js 渲染器，复用 MapLibre 的 canvas 和 WebGL 上下文
+                this.renderer = new THREE.WebGLRenderer({
+                    canvas: map.getCanvas(),
+                    context: gl,
+                    antialias: true
+                });
+                this.renderer.autoClear = false;
+
+                // 保存引用，便于外部控制动画
+                myThreeLayer = this;
+            },
+            render: function (gl, matrix) {
+                // MapLibre 每帧传入的 4x4 矩阵包含地图的透视、旋转等信息，直接赋值给相机
+                const m = new THREE.Matrix4().fromArray(matrix);
+                this.camera.projectionMatrix = m;
+                // 重置 WebGL 状态并渲染 three.js 场景
+                this.renderer.state.reset();
+                this.renderer.render(this.scene, this.camera);
+                map.triggerRepaint();
+            }
+        };
+
+        map.on('style.load', () => {
+            map.addLayer(threeLayer);
+        });
+
+        // 动画控制变量
+        let folded = false; // 当前是否处于折叠状态
+        const targetAngle = Math.PI / 6;  // 目标旋转角度：30°
+        const duration = 1000;            // 动画持续时间（毫秒）
+        let animationRequest;             // 保存 requestAnimationFrame 的句柄
+
+        // 动画函数：从 startAngle 动画到 endAngle
+        function animateFold(startAngle, endAngle, startTime) {
+            const now = performance.now();
+            const elapsed = now - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            const newAngle = startAngle + (endAngle - startAngle) * progress;
+            if (myThreeLayer && myThreeLayer.foldGroup) {
+                myThreeLayer.foldGroup.rotation.x = newAngle;
+            }
+            if (progress < 1) {
+                animationRequest = requestAnimationFrame(() => animateFold(startAngle, endAngle, startTime));
+            }
+        }
+
+        // 按钮点击事件：点击时执行折叠或展开动画
+        document.getElementById('fold-button').addEventListener('click', () => {
+            if (!myThreeLayer) return;
+            const currentAngle = myThreeLayer.foldGroup.rotation.x;
+            let startAngle, endAngle;
+            if (!folded) {
+                // 折叠：从当前角度动画到 targetAngle
+                startAngle = currentAngle;
+                endAngle = targetAngle;
+                folded = true;
+                document.getElementById('fold-button').innerText = 'Unfold Map';
+            } else {
+                // 展开：从当前角度动画回 0 度
+                startAngle = currentAngle;
+                endAngle = 0;
+                folded = false;
+                document.getElementById('fold-button').innerText = 'Fold Map';
+            }
+            cancelAnimationFrame(animationRequest);
+            animateFold(startAngle, endAngle, performance.now());
+        });
+    </script>
+</body>
+
+</html>

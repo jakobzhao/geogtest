@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <title>固定方向转动的立方体 —— 每 5 秒换一个方向，每一面都是边缘连接的 Maplibre 地图</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        /* Three.js 渲染区域 */
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+
+        /* 隐藏的 Maplibre 地图容器（均放到屏幕外） */
+        .mapContainer {
+            position: absolute;
+            width: 1024px;
+            height: 1024px;
+            left: -2000px;
+            top: -2000px;
+        }
+    </style>
+    <!-- 引入 Maplibre GL JS 样式 -->
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl/dist/maplibre-gl.css">
+</head>
+
+<body>
+    <!-- 用于 three.js 渲染的容器 -->
+    <div id="canvas-container"></div>
+
+    <!-- 6 个隐藏的 Maplibre 地图容器 -->
+    <div id="mapContainer_front" class="mapContainer"></div>
+    <div id="mapContainer_right" class="mapContainer"></div>
+    <div id="mapContainer_back" class="mapContainer"></div>
+    <div id="mapContainer_left" class="mapContainer"></div>
+    <div id="mapContainer_top" class="mapContainer"></div>
+    <div id="mapContainer_bottom" class="mapContainer"></div>
+
+    <!-- 引入 Maplibre 和 Three.js -->
+    <script src="https://unpkg.com/maplibre-gl/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+    <script>
+        // 请将下面的 MapTiler 访问令牌替换为你自己的密钥
+        const MAPTILER_KEY = 'get_your_own_OpIi9ZULNHzrESv6T2vL';
+
+        // 以纽约为例，选择一个中心坐标
+        const center = [-74.0060, 40.7128];
+        // 为了让各面边缘“连接”，我们采用展开立方体网的思路：
+        // 立方体展开图如下：
+        //       [top]
+        // [left] [front] [right] [back]
+        //      [bottom]
+        // 我们给各面设置微小的中心偏移（单位：度），使得各地图显示区域相邻
+        const offset = 0.01;
+        const faceCenters = {
+            front: center,                              // 正面
+            right: [center[0] + offset, center[1]],      // 右面：中心向东偏移 offset
+            back: [center[0] + 2 * offset, center[1]],   // 背面：继续向东偏移
+            left: [center[0] - offset, center[1]],       // 左面：中心向西偏移
+            top: [center[0], center[1] + offset],       // 顶面：中心向北偏移
+            bottom: [center[0], center[1] - offset]        // 底面：中心向南偏移
+        };
+
+        // 创建一个 Maplibre 地图实例的函数
+        function createMap(containerId, center) {
+            return new maplibregl.Map({
+                container: containerId,
+                style: `https://api.maptiler.com/maps/streets/style.json?key=${MAPTILER_KEY}`,
+                center: center,
+                zoom: 16,
+                pitch: 0,       // 正上方视角
+                bearing: 0,     // 北部朝上
+                interactive: false  // 禁用交互
+            });
+        }
+
+        // 分别创建 6 个地图实例
+        const map_front = createMap('mapContainer_front', faceCenters.front);
+        const map_right = createMap('mapContainer_right', faceCenters.right);
+        const map_back = createMap('mapContainer_back', faceCenters.back);
+        const map_left = createMap('mapContainer_left', faceCenters.left);
+        const map_top = createMap('mapContainer_top', faceCenters.top);
+        const map_bottom = createMap('mapContainer_bottom', faceCenters.bottom);
+
+        // 等待所有 6 个地图加载完成后再初始化 three.js 场景
+        let mapsLoaded = 0;
+        function checkAllMapsLoaded() {
+            mapsLoaded++;
+            if (mapsLoaded === 6) { initThreeJS(); }
+        }
+        map_front.on('load', checkAllMapsLoaded);
+        map_right.on('load', checkAllMapsLoaded);
+        map_back.on('load', checkAllMapsLoaded);
+        map_left.on('load', checkAllMapsLoaded);
+        map_top.on('load', checkAllMapsLoaded);
+        map_bottom.on('load', checkAllMapsLoaded);
+
+        // 声明 three.js 全局变量
+        let scene, camera, renderer, cube;
+        // 用于保存 6 个纹理
+        let texture_front, texture_right, texture_back, texture_left, texture_top, texture_bottom;
+
+        // 全局旋转速度变量，每个分量表示每帧增加的旋转量
+        let rotationSpeed = new THREE.Vector3(0, 0, 0);
+
+        // 每 5 秒更新一次旋转方向
+        function updateRotationSpeed() {
+            // 设置一个较小的随机旋转速度
+            rotationSpeed.set(
+                (Math.random() - 0.5) * 0.02,
+                (Math.random() - 0.5) * 0.02,
+                (Math.random() - 0.5) * 0.02
+            );
+        }
+        updateRotationSpeed();
+        setInterval(updateRotationSpeed, 5000);
+
+        function initThreeJS() {
+            // 创建场景
+            scene = new THREE.Scene();
+            // 创建相机
+            const aspect = window.innerWidth / window.innerHeight;
+            camera = new THREE.PerspectiveCamera(45, aspect, 0.1, 1000);
+            camera.position.z = 5;
+
+            // 创建渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // 分别从各地图实例获取 canvas，创建纹理
+            texture_front = new THREE.CanvasTexture(map_front.getCanvas());
+            texture_right = new THREE.CanvasTexture(map_right.getCanvas());
+            texture_back = new THREE.CanvasTexture(map_back.getCanvas());
+            texture_left = new THREE.CanvasTexture(map_left.getCanvas());
+            texture_top = new THREE.CanvasTexture(map_top.getCanvas());
+            texture_bottom = new THREE.CanvasTexture(map_bottom.getCanvas());
+
+            // 为提高放大时的清晰度，设置过滤参数和各向异性
+            [texture_front, texture_right, texture_back, texture_left, texture_top, texture_bottom].forEach(tex => {
+                tex.minFilter = THREE.LinearFilter;
+                tex.magFilter = THREE.LinearFilter;
+                tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+            });
+
+            // 创建一个立方体（BoxGeometry），尺寸 2×2×2
+            const geometry = new THREE.BoxGeometry(2, 2, 2);
+            // 为每个面指定一个材质（材质数组的顺序对应：右、左、上、下、前、后）
+            const materials = [
+                new THREE.MeshBasicMaterial({ map: texture_right }),   // 右面
+                new THREE.MeshBasicMaterial({ map: texture_left }),    // 左面
+                new THREE.MeshBasicMaterial({ map: texture_top }),     // 顶面
+                new THREE.MeshBasicMaterial({ map: texture_bottom }),  // 底面
+                new THREE.MeshBasicMaterial({ map: texture_front }),   // 前面
+                new THREE.MeshBasicMaterial({ map: texture_back })     // 背面
+            ];
+
+            cube = new THREE.Mesh(geometry, materials);
+            scene.add(cube);
+
+            // 开始动画
+            animate();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 持续更新各纹理，以便实时反映地图内容
+            texture_front.needsUpdate = true;
+            texture_right.needsUpdate = true;
+            texture_back.needsUpdate = true;
+            texture_left.needsUpdate = true;
+            texture_top.needsUpdate = true;
+            texture_bottom.needsUpdate = true;
+
+            // 使用全局 rotationSpeed，每帧增加固定的旋转量
+            cube.rotation.x += rotationSpeed.x;
+            cube.rotation.y += rotationSpeed.y;
+            cube.rotation.z += rotationSpeed.z;
+
+            renderer.render(scene, camera);
+        }
+
+        // 处理窗口尺寸变化
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+
+</html>

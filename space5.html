@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Maplibre 3D 建筑变形（着色器实现）</title>
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <!-- 引入 Maplibre GL JS 的 CSS -->
+    <link href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css" rel="stylesheet" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body,
+        #map {
+            height: 100%;
+        }
+
+        #controlPanel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 10;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            font-family: sans-serif;
+        }
+
+        #controlPanel button {
+            margin: 5px;
+            padding: 5px 10px;
+            font-size: 14px;
+        }
+    </style>
+    <!-- 加载 Maplibre GL JS -->
+    <script src="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.js"></script>
+</head>
+
+<body>
+    <div id="map"></div>
+    <!-- 控制面板 -->
+    <div id="controlPanel">
+        <button id="foldBtn">折叠</button>
+        <button id="twistBtn">扭曲</button>
+        <button id="mobiusBtn">Möbius</button>
+        <button id="resetBtn">重置</button>
+    </div>
+    <!-- 使用 ES 模块导入 Three.js -->
+    <script type="module">
+        import * as THREE from 'https://unpkg.com/three@0.152.2/build/three.module.js';
+
+        // 使用 demo 样式（不需要 token）；若需 MapTiler，请替换 MAPTILER_KEY 与 URL
+        const MAPTILER_KEY = 'get_your_own_OpIi9ZULNHzrESv6T2vL'; // 仅作占位
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: `https://api.maptiler.com/maps/basic-v2/style.json?key=${MAPTILER_KEY}`,
+            center: [-74.0060, 40.7128],
+            zoom: 15,
+            pitch: 60,
+            bearing: -17.6,
+            canvasContextAttributes: { antialias: true }
+        });
+
+        // 全局保存自定义图层引用
+        let threeLayer = null;
+
+        map.on('load', function () {
+            // 查找第一个 symbol 图层的 ID，用于插入 3D 建筑图层
+            const layers = map.getStyle().layers;
+            let labelLayerId;
+            for (let i = 0; i < layers.length; i++) {
+                if (layers[i].type === 'symbol' && layers[i].layout && layers[i].layout['text-field']) {
+                    labelLayerId = layers[i].id;
+                    break;
+                }
+            }
+
+            // 添加矢量数据源（demo 数据源）
+            map.addSource('openmaptiles', {
+                type: 'vector',
+                url: `https://api.maptiler.com/tiles/v3/tiles.json?key=${MAPTILER_KEY}`
+            });
+
+            // 添加 Maplibre 内置的 3D 建筑图层（真实建筑 extrusions）
+            map.addLayer({
+                'id': '3d-buildings',
+                'source': 'openmaptiles',
+                'source-layer': 'building',
+                'type': 'fill-extrusion',
+                'minzoom': 15,
+                'filter': ['!=', ['get', 'hide_3d'], true],
+                'paint': {
+                    'fill-extrusion-color': [
+                        'interpolate',
+                        ['linear'],
+                        ['get', 'render_height'], 0, 'lightgray', 200, 'royalblue', 400, 'lightblue'
+                    ],
+                    'fill-extrusion-height': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        15, 0,
+                        16, ['get', 'render_height']
+                    ],
+                    'fill-extrusion-base': [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        15, 0,
+                        16, ['get', 'render_min_height']
+                    ],
+                    'fill-extrusion-opacity': 0.8
+                }
+            }, labelLayerId);
+
+            // 添加自定义图层用于 Three.js 渲染示例建筑
+            const customLayer = {
+                id: 'threejs-buildings',
+                type: 'custom',
+                renderingMode: '3d',
+                onAdd: function (map, gl) {
+                    // 保存引用到全局变量
+                    threeLayer = this;
+
+                    // 创建 Three.js 场景和空相机（后续使用 Maplibre 提供的矩阵更新）
+                    this.scene = new THREE.Scene();
+                    this.camera = new THREE.Camera();
+                    // 创建渲染器，复用 Maplibre 的 canvas 和 WebGL 上下文
+                    this.renderer = new THREE.WebGLRenderer({
+                        canvas: map.getCanvas(),
+                        context: gl,
+                        antialias: true
+                    });
+                    this.renderer.autoClear = false;
+
+                    // 添加光照
+                    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+                    this.scene.add(ambientLight);
+                    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+                    directionalLight.position.set(0, -70, 100).normalize();
+                    this.scene.add(directionalLight);
+
+                    // 创建建筑组
+                    this.buildingGroup = new THREE.Group();
+                    this.scene.add(this.buildingGroup);
+
+                    // 定义自定义 ShaderMaterial（顶点着色器利用 originalPosition 进行变形）
+                    const vertexShader = `
+            attribute vec3 originalPosition;
+            uniform int u_mode;
+            uniform float u_amount;
+            void main() {
+              vec3 pos = originalPosition;
+              if(u_mode == 1) {
+                // 折叠：如果 pos.x >= 0，则绕 Y 轴旋转 u_amount * PI/2（当 u_amount==1 时为90°）
+                if(pos.x >= 0.0) {
+                  float angle = u_amount * 1.5708;
+                  float s = sin(angle);
+                  float c = cos(angle);
+                  pos = vec3(c * pos.x - s * pos.z, pos.y, s * pos.x + c * pos.z);
+                }
+              } else if(u_mode == 2) {
+                // 扭曲：角度与 pos.x 成正比，最大 30° * u_amount
+                float angle = u_amount * (pos.x / 10.0) * 0.5236;
+                float s = sin(angle);
+                float c = cos(angle);
+                pos = vec3(c * pos.x - s * pos.z, pos.y, s * pos.x + c * pos.z);
+              } else if(u_mode == 3) {
+                // Möbius：对 pos.y 加上正弦扰动
+                pos.y += sin(pos.x * 3.14159 / 10.0) * u_amount * 2.0;
+              }
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+            }
+          `;
+                    const fragmentShader = `
+            uniform vec3 u_color;
+            void main() {
+              gl_FragColor = vec4(u_color, 1.0);
+            }
+          `;
+                    // 工厂函数，创建 ShaderMaterial（不使用 built-in lights）
+                    const createShaderMaterial = function (color) {
+                        return new THREE.ShaderMaterial({
+                            vertexShader: vertexShader,
+                            fragmentShader: fragmentShader,
+                            uniforms: {
+                                u_mode: { value: 0 },
+                                u_amount: { value: 0.0 },
+                                u_color: { value: new THREE.Color(color) }
+                            }
+                        });
+                    };
+
+                    // --- 示例建筑 1：BoxGeometry 建筑 ---
+                    const boxGeom = new THREE.BoxGeometry(10, 20, 10);
+                    // 将原始位置复制到自定义属性 originalPosition
+                    boxGeom.setAttribute('originalPosition', boxGeom.attributes.position.clone());
+                    const boxMat = createShaderMaterial(0x0077ff);
+                    const building1 = new THREE.Mesh(boxGeom, boxMat);
+                    building1.position.set(-20, 10, -20);
+                    this.buildingGroup.add(building1);
+
+                    // --- 示例建筑 2：ExtrudeGeometry 建筑 ---
+                    const shape = new THREE.Shape();
+                    shape.moveTo(0, 0);
+                    shape.lineTo(0, 15);
+                    shape.lineTo(15, 15);
+                    shape.lineTo(15, 0);
+                    shape.lineTo(0, 0);
+                    const extrudeSettings = { depth: 25, bevelEnabled: false };
+                    const extrudeGeom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+                    // 旋转 90° 使其沿 y 轴挤出
+                    extrudeGeom.rotateX(-Math.PI / 2);
+                    extrudeGeom.setAttribute('originalPosition', extrudeGeom.attributes.position.clone());
+                    const extrudeMat = createShaderMaterial(0xff7700);
+                    const building2 = new THREE.Mesh(extrudeGeom, extrudeMat);
+                    building2.position.set(20, 0, 20);
+                    this.buildingGroup.add(building2);
+                },
+                render: function (gl, matrix) {
+                    this.camera.projectionMatrix = new THREE.Matrix4().fromArray(matrix);
+                    this.renderer.state.reset();
+                    this.renderer.render(this.scene, this.camera);
+                    map.triggerRepaint();
+                }
+            };
+
+            map.addLayer(customLayer);
+        });
+
+        // ------------------------------
+        // 变形 uniform 更新函数
+        // ------------------------------
+        // u_mode: 0 = 无；1 = 折叠；2 = 扭曲；3 = Möbius
+        // u_amount: 0 ~ 1，控制变形程度
+        function updateTransformation(mode, amount) {
+            if (!threeLayer || !threeLayer.buildingGroup) return;
+            threeLayer.buildingGroup.traverse(function (child) {
+                if (child.isMesh && child.material && child.material.uniforms) {
+                    child.material.uniforms.u_mode.value = mode;
+                    child.material.uniforms.u_amount.value = amount;
+                }
+            });
+        }
+
+        // 绑定按钮点击事件
+        document.getElementById("foldBtn").addEventListener("click", function () {
+            updateTransformation(1, 1.0); // 折叠效果：u_amount=1 表示 90° 全折
+        });
+        document.getElementById("twistBtn").addEventListener("click", function () {
+            updateTransformation(2, 1.0); // 扭曲效果：最大约 30° 扭曲
+        });
+        document.getElementById("mobiusBtn").addEventListener("click", function () {
+            updateTransformation(3, 1.0); // Möbius：最大扰动
+        });
+        document.getElementById("resetBtn").addEventListener("click", function () {
+            updateTransformation(0, 0.0); // 重置：无变形
+        });
+    </script>
+</body>
+
+</html>
